@@ -1233,18 +1233,18 @@ class FastLlamaModel:
 
         # Patch Trainer
         from transformers.trainer import Trainer
-        try:
-            if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
-                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
-                Trainer._original_training_loop = inner_training_loop
-            else:
-                inner_training_loop = Trainer._original_training_loop
-        except:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+        # try:
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+            Trainer._original_training_loop = inner_training_loop
+        else:
+            inner_training_loop = Trainer._original_training_loop
+        # except:
+        #     raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
 
-        if ((post_check - pre_check) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+        # if ((post_check - pre_check) >= 1).sum() > 1:
+        #     raise RuntimeError(f'{post_check - pre_check} Unsloth currently does not support multi GPU setups - but we are working on it!')
 
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
@@ -1337,9 +1337,9 @@ class FastLlamaModel:
             "is_torch_tpu_available()",
             "False",
         )
-        if "n_total_devices >" not in inner_training_loop:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        pass
+        # if "n_total_devices >" not in inner_training_loop:
+        #     raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+        # pass
         inner_training_loop = inner_training_loop.replace(
             "is_sagemaker_mp_enabled()",
             "False",
