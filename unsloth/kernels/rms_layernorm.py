@@ -17,6 +17,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings
 
+from .compress_function import *
 
 @triton.jit
 def _rms_layernorm_forward(
@@ -130,7 +131,9 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps, gemma = False):
+    def forward(ctx, X, W, eps, gemma = False,
+                iteration=0, calibration_step=5, register_target=None,
+                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -154,7 +157,33 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
         ctx.GEMMA = gemma
-        ctx.save_for_backward(X, W, r)
+        
+        # reshape the X
+        X = X.view(*shape)
+        
+        # if iteration < calibration_step, we nedd to collect the statistics
+        if iteration < calibration_step:
+            with torch.autocast(device_type='cuda', dtype=torch.float32):
+                outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+            if iteration == 0: # register
+                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('L', L_X)
+                register_target.register_buffer('R', R_X)
+                register_target.register_buffer('scale', scale_X)
+            else: # compute the average
+                register_target.outlier = (register_target.outlier * iteration + outlier_X) / (iteration + 1)
+                register_target.L = (register_target.L * iteration + L_X) / (iteration + 1)
+                register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
+                register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
+        
+        # else directly use it
+        if iteration == calibration_step:
+            print('register finished!')
+        
+        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
+        ctx.quantize_bit = quantize_bit
+        
+        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X, W, r)
         return Y.view(*shape)
     pass
 
@@ -163,7 +192,12 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         shape = dY.shape
         dim = shape[-1]
         dY = dY.view(-1, dim)
-        X, W, r = ctx.saved_tensors
+        outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X, W, r = ctx.saved_tensors
+        
+        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
+        dim = shape[-1]
+        X = X.view(-1, dim)
+        
         n_rows, n_cols = dY.shape
         dW = X
 
@@ -179,7 +213,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             num_warps  = ctx.num_warps,
         )
         dX = dY.view(*shape)
-        return dX, None, None, None
+        return dX, None, None, None, None, None, None, None, None, None, None
     pass
 pass
 
@@ -187,6 +221,9 @@ pass
 def fast_rms_layernorm(layernorm, X, gemma = False):
     W   = layernorm.weight
     eps = layernorm.variance_epsilon
-    out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+    out = Fast_RMS_Layernorm.apply(
+        X, W, eps, gemma,
+        layernorm.iteration, layernorm.calibration_step, layernorm
+    )
     return out
 pass

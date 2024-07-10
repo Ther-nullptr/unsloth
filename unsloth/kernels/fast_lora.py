@@ -21,6 +21,7 @@ from .utils import (
     matmul_lora,
 )
 
+from .compress_function import *
 
 class LoRA_MLP(torch.autograd.Function):
     """
@@ -66,7 +67,9 @@ class LoRA_MLP(torch.autograd.Function):
                 gateW, gateW_quant, gateA, gateB, gateS,
                   upW,   upW_quant, upA,   upB,   upS,
                 downW, downW_quant, downA, downB, downS,
-                _forward_function, _backward_function,):
+                _forward_function, _backward_function,                
+                iteration=0, calibration_step=5, register_target=None,
+                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -80,8 +83,63 @@ class LoRA_MLP(torch.autograd.Function):
             downW, downW_quant, downS,
             _backward_function,
         )
+        # ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
+        #                       X, e, g)
+        
+        #! deal with X, e, g
+        if iteration < calibration_step:
+            with torch.autocast(device_type='cuda', dtype=torch.float32):
+                outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+                outlier_e, L_e, R_e, scale_e = get_statistics_compress(e, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+                outlier_g, L_g, R_g, scale_g = get_statistics_compress(g, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+            if iteration == 0: # register
+                # for X
+                register_target.register_buffer('outlier_X', outlier_X)
+                register_target.register_buffer('L_X', L_X)
+                register_target.register_buffer('R_X', R_X)
+                register_target.register_buffer('scale_X', scale_X)
+                # for e
+                register_target.register_buffer('outlier_e', outlier_e)
+                register_target.register_buffer('L_e', L_e)
+                register_target.register_buffer('R_e', R_e)
+                register_target.register_buffer('scale_e', scale_e)
+                # for g
+                register_target.register_buffer('outlier_g', outlier_g)
+                register_target.register_buffer('L_g', L_g)
+                register_target.register_buffer('R_g', R_g)
+                register_target.register_buffer('scale_g', scale_g)
+            else: # compute the average
+                # for X
+                register_target.outlier_X = (register_target.outlier_X * iteration + outlier_X) / (iteration + 1)
+                register_target.L_X = (register_target.L_X * iteration + L_X) / (iteration + 1)
+                register_target.R_X = (register_target.R_X * iteration + R_X) / (iteration + 1)
+                register_target.scale_X = (register_target.scale_X * iteration + scale_X) / (iteration + 1)
+                # for e
+                register_target.outlier_e = (register_target.outlier_e * iteration + outlier_e) / (iteration + 1)
+                register_target.L_e = (register_target.L_e * iteration + L_e) / (iteration + 1)
+                register_target.R_e = (register_target.R_e * iteration + R_e) / (iteration + 1)
+                register_target.scale_e = (register_target.scale_e * iteration + scale_e) / (iteration + 1)
+                # for g
+                register_target.outlier_g = (register_target.outlier_g * iteration + outlier_g) / (iteration + 1)
+                register_target.L_g = (register_target.L_g * iteration + L_g) / (iteration + 1)
+                register_target.R_g = (register_target.R_g * iteration + R_g) / (iteration + 1)
+                register_target.scale_g = (register_target.scale_g * iteration + scale_g) / (iteration + 1)
+        
+        # else directly use it
+        if iteration == calibration_step:
+            print('register finished!')
+        
+        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier_X, register_target.scale_X, quantize_bit, 1., register_target.L_X, register_target.R_X)
+        outlier_e_compressed, quantized_e_compressed, scale_e = true_divide_outlier_suboutlier_svd_compress(e, register_target.outlier_e, register_target.scale_e, quantize_bit, 1., register_target.L_e, register_target.R_e)
+        outlier_g_compressed, quantized_g_compressed, scale_g = true_divide_outlier_suboutlier_svd_compress(g, register_target.outlier_g, register_target.scale_g, quantize_bit, 1., register_target.L_g, register_target.R_g)
+        ctx.quantize_bit = quantize_bit
+        
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
-                              X, e, g)
+            outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, scale_X,
+            outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, scale_e,
+            outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, scale_g,
+        )
+        
         return i
     pass
 
@@ -92,7 +150,13 @@ class LoRA_MLP(torch.autograd.Function):
         gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, \
             _backward_function = ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, \
-            X, e, g = ctx.saved_tensors
+            outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X, \
+            outlier_e_compressed, quantized_e_compressed, e_L, e_R, scale_e, \
+            outlier_g_compressed, quantized_g_compressed, g_L, g_R, scale_g = ctx.saved_tensors
+        
+        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
+        e = true_divide_outlier_suboutlier_svd_decompress(outlier_e_compressed, quantized_e_compressed, ctx.quantize_bit, scale_e, L=e_L, R=e_R)
+        g = true_divide_outlier_suboutlier_svd_decompress(outlier_g_compressed, quantized_g_compressed, ctx.quantize_bit, scale_g, L=g_L, R=g_R)
 
         gateA, gateB, upA, upB, downA, downB = \
             gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
@@ -145,7 +209,8 @@ class LoRA_MLP(torch.autograd.Function):
             None, None, d_gateA.t(), d_gateB.t(), None, \
             None, None,   d_upA.t(),   d_upB.t(), None, \
             None, None, d_downA.t(), d_downB.t(), None, \
-            None, None, # _backward and _forward
+            None, None, \
+            None, None, None, None, None, None, None
     pass
 pass
 
@@ -159,7 +224,10 @@ def apply_lora_mlp_swiglu(self, X):
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS,
-                         swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel,)
+                         swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel,
+                         self.gate_proj.iteration, self.calibration_step, self.gate_proj
+    )
+    self.gate_proj.iteration += 1
     return out
 pass
 
@@ -227,7 +295,9 @@ class LoRA_QKV(torch.autograd.Function):
     def forward(ctx, X : torch.Tensor,
                 QW, QW_quant, QA, QB, QS,
                 KW, KW_quant, KA, KB, KS,
-                VW, VW_quant, VA, VB, VS,):
+                VW, VW_quant, VA, VB, VS,
+                iteration=0, calibration_step=5, register_target=None,
+                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -239,7 +309,30 @@ class LoRA_QKV(torch.autograd.Function):
             KW, KW_quant, KS,
             VW, VW_quant, VS,
         )
-        ctx.save_for_backward(X, QA, QB, KA, KB, VA, VB,)
+        
+        # if iteration < calibration_step, we nedd to collect the statistics
+        if iteration < calibration_step:
+            with torch.autocast(device_type='cuda', dtype=torch.float32):
+                outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+            if iteration == 0: # register
+                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('L', L_X)
+                register_target.register_buffer('R', R_X)
+                register_target.register_buffer('scale', scale_X)
+            else: # compute the average
+                register_target.outlier = (register_target.outlier * iteration + outlier_X) / (iteration + 1)
+                register_target.L = (register_target.L * iteration + L_X) / (iteration + 1)
+                register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
+                register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
+        
+        # else directly use it
+        if iteration == calibration_step:
+            print('register finished!')
+        
+        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
+        ctx.quantize_bit = quantize_bit
+        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X,\
+            QA, QB, KA, KB, VA, VB,)
         return Q, K, V
     pass
 
@@ -248,7 +341,11 @@ class LoRA_QKV(torch.autograd.Function):
     def backward(ctx, dQ, dK, dV):
         QW, QW_quant, QS, KW, KW_quant, KS, VW, VW_quant, VS = \
             ctx.custom_saved_tensors
-        X, QA, QB, KA, KB, VA, VB, = ctx.saved_tensors
+        outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X,\
+            QA, QB, KA, KB, VA, VB, = ctx.saved_tensors
+        
+        # decompress the X
+        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
 
         QA, QB, KA, KB, VA, VB = \
             QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
@@ -306,7 +403,8 @@ class LoRA_QKV(torch.autograd.Function):
         return dX.view(batch, seq_len, hd), \
             None, None, d_QA.t(), d_QB.t(), None, \
             None, None, d_KA.t(), d_KB.t(), None, \
-            None, None, d_VA.t(), d_VB.t(), None
+            None, None, d_VA.t(), d_VB.t(), None, \
+            None, None, None, None, None, None, None
     pass
 pass
 
@@ -319,7 +417,9 @@ def apply_lora_qkv(self, X):
         QW, QW_quant, QA, QB, QS,
         KW, KW_quant, KA, KB, KS,
         VW, VW_quant, VA, VB, VS,
+        self.q_proj.iteration, self.calibration_step, self.q_proj
     )
+    self.q_proj.iteration += 1
     return Q, K, V
 pass
 
@@ -354,11 +454,36 @@ class LoRA_W(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_fwd
     def forward(ctx, X : torch.Tensor,
-                W, W_quant, A, B, S):
+                W, W_quant, A, B, S,
+                iteration=0, calibration_step=5, register_target=None,
+                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
         ctx.custom_saved_tensors = (W, W_quant, S,)
-        ctx.save_for_backward(A, B, X)
+        
+        # if iteration < calibration_step, we nedd to collect the statistics
+        if iteration < calibration_step:
+            with torch.autocast(device_type='cuda', dtype=torch.float32):
+                outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
+            if iteration == 0: # register
+                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('L', L_X)
+                register_target.register_buffer('R', R_X)
+                register_target.register_buffer('scale', scale_X)
+            else: # compute the average
+                register_target.outlier = (register_target.outlier * iteration + outlier_X) / (iteration + 1)
+                register_target.L = (register_target.L * iteration + L_X) / (iteration + 1)
+                register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
+                register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
+        
+        # else directly use it
+        if iteration == calibration_step:
+            print('register finished!')
+        
+        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
+        ctx.quantize_bit = quantize_bit
+        ctx.save_for_backward(A, B, outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X)
+
         return XW
     pass
 
@@ -366,7 +491,9 @@ class LoRA_W(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY : torch.Tensor):
         W, W_quant, S = ctx.custom_saved_tensors
-        A, B, X = ctx.saved_tensors
+        A, B, outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X = ctx.saved_tensors
+        
+        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
 
         A, B = A.t(), B.t()
 
@@ -390,13 +517,18 @@ class LoRA_W(torch.autograd.Function):
 
         # W, W_quant, A, B, S
         return dX.view(batch, seq_len, hd), \
-            None, None, d_A.t(), d_B.t(), None
+            None, None, d_A.t(), d_B.t(), None, \
+            None, None, None, None, None, None, None
     pass
 pass
 
 
 def apply_lora_o(self, X):
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    O = LoRA_W.apply(
+        X, OW, OW_quant, OA, OB, OS,
+        self.o_proj.iteration, self.calibration_step, self.o_proj
+    )
+    self.o_proj.iteration += 1
     return O
 pass

@@ -403,7 +403,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
-def LlamaDecoderLayer_fast_forward(
+def LlamaDecoderLayer_fast_forward( #! this way
     self,
     hidden_states:        torch.Tensor,
     causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
@@ -478,7 +478,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-def LlamaModel_fast_forward(
+def LlamaModel_fast_forward( #! full model
     self,
     input_ids:            torch.LongTensor,
     causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
@@ -1471,6 +1471,7 @@ class FastLlamaModel:
         init_lora_weights   = True,
         loftq_config        = {},
         temporary_location  = "_unsloth_temporary_saved_buffers",
+        calibration_step    = 5,
         **kwargs,
     ):
         transformers_set_seed(random_state)
@@ -1795,6 +1796,12 @@ class FastLlamaModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
+        
+        # set iteration and calibration step to every module:
+        for name, module in model.named_modules():
+            print(name)
+            module.iteration = 0
+            module.calibration_step = calibration_step
 
         return model
     pass

@@ -37,7 +37,7 @@ except:
 pass
 
 
-def MistralAttention_fast_forward(
+def MistralAttention_fast_forward( #! This way
     self,
     hidden_states:        torch.Tensor,
     causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,

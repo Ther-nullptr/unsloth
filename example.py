@@ -171,7 +171,7 @@ model = FastLanguageModel.get_peft_model(
     lora_dropout = 0, # Supports any, but = 0 is optimized
     bias = "none",    # Supports any, but = "none" is optimized
     # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = True, # "unsloth", # True or "unsloth" for very long context
+    use_gradient_checkpointing = False, # "unsloth", # True or "unsloth" for very long context
     random_state = 3407,
     max_seq_length = max_seq_length,
     use_rslora = False,  # We support rank stabilized LoRA
