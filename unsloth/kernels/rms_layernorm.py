@@ -176,14 +176,17 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
                 register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
         
-        # else directly use it
-        if iteration == calibration_step:
-            print('register finished!')
-        
-        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
-        ctx.quantize_bit = quantize_bit
-        
+        outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L, 
+            r = register_target.R, 
+            x = X, 
+            s = register_target.scale, 
+            quantized_bit = register_target.outlier, 
+            outlier = quantize_bit
+        )
+        ctx.quantize_bit = quantize_bit        
         ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X, W, r)
+        
         return Y.view(*shape)
     pass
 
@@ -194,7 +197,15 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dY = dY.view(-1, dim)
         outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X, W, r = ctx.saved_tensors
         
-        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
+        X = low_rank_addition_fuse_decompression_dequantization(
+            l=X_L,
+            r=X_R,
+            q=quantized_X_compressed,
+            o=outlier_X_compressed,
+            s=scale_X,
+            quantize_bit=ctx.quantize_bit,
+        )
+        
         dim = shape[-1]
         X = X.view(-1, dim)
         

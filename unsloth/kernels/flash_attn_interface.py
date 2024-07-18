@@ -102,13 +102,30 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
                 register_target.R_g = (register_target.R_g * iteration + R_g) / (iteration + 1)
                 register_target.scale_g = (register_target.scale_g * iteration + scale_g) / (iteration + 1)
         
-        # else directly use it
-        if iteration == calibration_step:
-            print('register finished!')
-        
-        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(q, register_target.outlier_X, register_target.scale_X, quantize_bit, 1., register_target.L_X, register_target.R_X)
-        outlier_e_compressed, quantized_e_compressed, scale_e = true_divide_outlier_suboutlier_svd_compress(k, register_target.outlier_e, register_target.scale_e, quantize_bit, 1., register_target.L_e, register_target.R_e)
-        outlier_g_compressed, quantized_g_compressed, scale_g = true_divide_outlier_suboutlier_svd_compress(v, register_target.outlier_g, register_target.scale_g, quantize_bit, 1., register_target.L_g, register_target.R_g)
+        outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_X, 
+            r = register_target.R_X,
+            x = q,
+            s = register_target.scale_X, 
+            quantize_bit = quantize_bit, 
+            outlier = register_target.outlier_X, 
+        )
+        outlier_e_compressed, quantized_e_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_e,
+            r = register_target.R_e,
+            x = k,
+            s = register_target.scale_e,
+            quantize_bit = quantize_bit,
+            outlier = register_target.outlier_e,
+        )
+        outlier_g_compressed, quantized_g_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_g,
+            r = register_target.R_g,
+            x = v,
+            s = register_target.scale_g,
+            quantize_bit = quantize_bit,
+            outlier = register_target.outlier_g,
+        )
         ctx.quantize_bit = quantize_bit
         ctx.num_heads = q.shape[2]
         ctx.k_num_heads = k.shape[2]
@@ -117,7 +134,8 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
             outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, scale_X,
             outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, scale_e,
             outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, scale_g,
-            out_padded, softmax_lse, rng_state)
+            out_padded, softmax_lse, rng_state
+        )
         ctx.dropout_p = dropout_p
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
@@ -131,9 +149,36 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X, \
             outlier_e_compressed, quantized_e_compressed, e_L, e_R, scale_e, \
             outlier_g_compressed, quantized_g_compressed, g_L, g_R, scale_g, out, softmax_lse, rng_state = ctx.saved_tensors
-        q = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, is_head=True, num_heads=ctx.num_heads, L=X_L, R=X_R)
-        k = true_divide_outlier_suboutlier_svd_decompress(outlier_e_compressed, quantized_e_compressed, ctx.quantize_bit, scale_e, is_head=True, num_heads=ctx.k_num_heads, L=e_L, R=e_R)
-        v = true_divide_outlier_suboutlier_svd_decompress(outlier_g_compressed, quantized_g_compressed, ctx.quantize_bit, scale_g, is_head=True, num_heads=ctx.k_num_heads, L=g_L, R=g_R)
+        q = low_rank_addition_fuse_decompression_dequantization(
+            l=X_L,
+            r=X_R,
+            q=quantized_X_compressed,
+            o=outlier_X_compressed,
+            s=scale_X,
+            quantize_bit=ctx.quantize_bit,
+            is_head=True,
+            num_heads=ctx.num_heads
+        )
+        k = low_rank_addition_fuse_decompression_dequantization(
+            l=e_L,
+            r=e_R,
+            q=quantized_e_compressed,
+            o=outlier_e_compressed,
+            s=scale_e,
+            quantize_bit=ctx.quantize_bit,
+            is_head=True,
+            num_heads=ctx.num_k_heads
+        )
+        v = low_rank_addition_fuse_decompression_dequantization(
+            l=g_L,
+            r=g_R,
+            q=quantized_g_compressed,
+            o=outlier_g_compressed,
+            s=scale_g,
+            quantize_bit=ctx.quantize_bit,
+            is_head=True,
+            num_heads=ctx.num_k_heads
+        )
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
         _flash_attn_backward(
             dout,

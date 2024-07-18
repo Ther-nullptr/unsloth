@@ -125,13 +125,30 @@ class LoRA_MLP(torch.autograd.Function):
                 register_target.R_g = (register_target.R_g * iteration + R_g) / (iteration + 1)
                 register_target.scale_g = (register_target.scale_g * iteration + scale_g) / (iteration + 1)
         
-        # else directly use it
-        if iteration == calibration_step:
-            print('register finished!')
-        
-        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier_X, register_target.scale_X, quantize_bit, 1., register_target.L_X, register_target.R_X)
-        outlier_e_compressed, quantized_e_compressed, scale_e = true_divide_outlier_suboutlier_svd_compress(e, register_target.outlier_e, register_target.scale_e, quantize_bit, 1., register_target.L_e, register_target.R_e)
-        outlier_g_compressed, quantized_g_compressed, scale_g = true_divide_outlier_suboutlier_svd_compress(g, register_target.outlier_g, register_target.scale_g, quantize_bit, 1., register_target.L_g, register_target.R_g)
+        outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_X, 
+            r = register_target.R_X,
+            x = X,
+            s = register_target.scale_X, 
+            quantize_bit = quantize_bit, 
+            outlier = register_target.outlier_X, 
+        )
+        outlier_e_compressed, quantized_e_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_e,
+            r = register_target.R_e,
+            x = e,
+            s = register_target.scale_e,
+            quantize_bit = quantize_bit,
+            outlier = register_target.outlier_e,
+        )
+        outlier_g_compressed, quantized_g_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_g,
+            r = register_target.R_g,
+            x = g,
+            s = register_target.scale_g,
+            quantize_bit = quantize_bit,
+            outlier = register_target.outlier_g,
+        )
         ctx.quantize_bit = quantize_bit
         
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
@@ -154,9 +171,30 @@ class LoRA_MLP(torch.autograd.Function):
             outlier_e_compressed, quantized_e_compressed, e_L, e_R, scale_e, \
             outlier_g_compressed, quantized_g_compressed, g_L, g_R, scale_g = ctx.saved_tensors
         
-        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
-        e = true_divide_outlier_suboutlier_svd_decompress(outlier_e_compressed, quantized_e_compressed, ctx.quantize_bit, scale_e, L=e_L, R=e_R)
-        g = true_divide_outlier_suboutlier_svd_decompress(outlier_g_compressed, quantized_g_compressed, ctx.quantize_bit, scale_g, L=g_L, R=g_R)
+        X = low_rank_addition_fuse_decompression_dequantization(
+            l=X_L,
+            r=X_R,
+            q=quantized_X_compressed,
+            o=outlier_X_compressed,
+            s=scale_X,
+            quantize_bit=ctx.quantize_bit,
+        )
+        e = low_rank_addition_fuse_decompression_dequantization(
+            l=e_L,
+            r=e_R,
+            q=quantized_e_compressed,
+            o=outlier_e_compressed,
+            s=scale_e,
+            quantize_bit=ctx.quantize_bit,
+        )
+        g = low_rank_addition_fuse_decompression_dequantization(
+            l=g_L,
+            r=g_R,
+            q=quantized_g_compressed,
+            o=outlier_g_compressed,
+            s=scale_g,
+            quantize_bit=ctx.quantize_bit,
+        )
 
         gateA, gateB, upA, upB, downA, downB = \
             gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
@@ -325,11 +363,14 @@ class LoRA_QKV(torch.autograd.Function):
                 register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
                 register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
         
-        # else directly use it
-        if iteration == calibration_step:
-            print('register finished!')
-        
-        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
+        outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_X, 
+            r = register_target.R_X,
+            x = X,
+            s = register_target.scale_X, 
+            quantize_bit = quantize_bit, 
+            outlier = register_target.outlier_X, 
+        )
         ctx.quantize_bit = quantize_bit
         ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X,\
             QA, QB, KA, KB, VA, VB,)
@@ -345,7 +386,14 @@ class LoRA_QKV(torch.autograd.Function):
             QA, QB, KA, KB, VA, VB, = ctx.saved_tensors
         
         # decompress the X
-        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
+        X = low_rank_addition_fuse_decompression_dequantization(
+            l=X_L,
+            r=X_R,
+            q=quantized_X_compressed,
+            o=outlier_X_compressed,
+            s=scale_X,
+            quantize_bit=ctx.quantize_bit,
+        )
 
         QA, QB, KA, KB, VA, VB = \
             QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
@@ -476,11 +524,14 @@ class LoRA_W(torch.autograd.Function):
                 register_target.R = (register_target.R * iteration + R_X) / (iteration + 1)
                 register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
         
-        # else directly use it
-        if iteration == calibration_step:
-            print('register finished!')
-        
-        outlier_X_compressed, quantized_X_compressed, scale_X = true_divide_outlier_suboutlier_svd_compress(X, register_target.outlier, register_target.scale, quantize_bit, 1., register_target.L, register_target.R)
+        outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
+            l = register_target.L_X, 
+            r = register_target.R_X,
+            x = X,
+            s = register_target.scale_X, 
+            quantize_bit = quantize_bit, 
+            outlier = register_target.outlier_X, 
+        )
         ctx.quantize_bit = quantize_bit
         ctx.save_for_backward(A, B, outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X)
 
@@ -493,7 +544,14 @@ class LoRA_W(torch.autograd.Function):
         W, W_quant, S = ctx.custom_saved_tensors
         A, B, outlier_X_compressed, quantized_X_compressed, X_L, X_R, scale_X = ctx.saved_tensors
         
-        X = true_divide_outlier_suboutlier_svd_decompress(outlier_X_compressed, quantized_X_compressed, ctx.quantize_bit, scale_X, L=X_L, R=X_R)
+        X = low_rank_addition_fuse_decompression_dequantization(
+            l=X_L,
+            r=X_R,
+            q=quantized_X_compressed,
+            o=outlier_X_compressed,
+            s=scale_X,
+            quantize_bit=ctx.quantize_bit,
+        )
 
         A, B = A.t(), B.t()
 

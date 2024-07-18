@@ -1,5 +1,6 @@
 import torch
-from .fused_compression import *
+from .compress_function_kernel import *
+
 
 def hidden_to_head_shape(x: torch.Tensor, num_heads: int):
     bsz, seq_len, hidden_dim = x.shape
@@ -12,153 +13,84 @@ def head_to_hidden_shape(x: torch.Tensor):
     return x.reshape(bsz, seq_len, -1)
 
 
-def convert_coo_to_tuple(x_coo):
-    # extract all the elements
-    x_coo_indices = x_coo.indices().to(torch.int16)
-    x_coo_values = x_coo.values()
-    x_coo_size = x_coo.size()
-    x_coo_device = x_coo.device
-    # convert to tuple # indices: int64 -> int16
-    x_coo_tuple = (x_coo_indices, x_coo_values, x_coo_size, x_coo_device)
-    return x_coo_tuple
-
-
-def convert_tuple_to_coo(x_coo_tuple):
-    # return x_coo_tuple
-    x_coo_indices = x_coo_tuple[0]
-    x_coo_values = x_coo_tuple[1]
-    x_coo_size = x_coo_tuple[2]
-    x_coo_device = x_coo_tuple[3]
-    x_coo = torch.sparse_coo_tensor(
-        indices=x_coo_indices,
-        values=x_coo_values,
-        size=x_coo_size,
-        device=x_coo_device,
-    )
-    return x_coo
-
-
-def true_divide_outlier_suboutlier_svd_compress(x: torch.Tensor, outlier: float, scale: float, sub_outlier_bit: int = 8, sub_outlier_ratio: float = 1., L: torch.Tensor = None, R: torch.Tensor = None):
+def low_rank_subtraction_fuse_compression_quantization(l, r, x, s, quantize_bit=8, outlier=5.):
+    # Check constraints.
+    assert l.shape[1] == r.shape[0], "Incompatible dimensions"
+    assert l.is_contiguous(), "Matrix A must be contiguous"
+    assert r.is_contiguous(), "Matrix B must be contiguous"
+    
+    # Change shape if need
     is_head = len(x.shape) == 4
     if is_head:
-        num_heads = x.shape[1]
         x = head_to_hidden_shape(x)
     
-    # step 1: substract the svd base
-    tgt_L = torch.zeros((x.shape[-2], L.shape[-1]))
-    with torch.no_grad():
-        x = x - (L @ R)
-    x = low_rank_addition(L, -R, x)
-    
-    # step 2: prune the outlier
-    mask_1 = (x.abs() > outlier)
-    x_outlier = x * mask_1
-    x = x - x_outlier
-    # compress the x_outlier
-    if torch.sum(scale) != 1.:
-        x_outlier_compressed = x_outlier.view(-1)#.to_sparse() # coo
-    else:
-        x_outlier_compressed = x_outlier
-    del x_outlier
-    x_outlier_compressed = torch.tensor(0.).to(torch.bfloat16).cuda()
-    
-    # step 3: quantize the suboutlier
-    if sub_outlier_ratio == 0.:
-        x_sub_outlier = torch.tensor(0.).cuda()
-        x_sub_outlier_compressed = torch.tensor(0.).cuda()
-        scale = torch.tensor(1.).cuda()
-    else:
-        x_sub_outlier = x
-        assert (sub_outlier_bit in [1, 2, 4, 8, 16]), "Only support 1,2,4,8,16 bit quantization"
-        if sub_outlier_bit == 16:
-            pass
-        else:
-            x_sub_outlier = torch.clamp(torch.round(x_sub_outlier / scale), min=-(2 ** (sub_outlier_bit - 1)), max=2 ** (sub_outlier_bit - 1) - 1)
-            # now the x_sub_outlier is int type, then we can use bit squeeze method
-            # since the shape is [bs, seq_len, hidden_dim], and hidden_dim is usually divisble by 8, so use hidden_dim dim to squeeze
-            hidden_dim = x_sub_outlier.shape[-1]
-            
-            if sub_outlier_bit == 8:
-                x_sub_outlier_compressed = x_sub_outlier.to(torch.int8)
-            elif sub_outlier_bit == 4:
-                # shift to positive
-                x_sub_outlier = (x_sub_outlier + 8).to(torch.uint8)
-                x_sub_outlier_compressed = x_sub_outlier[..., 0:(hidden_dim // 2)] \
-                + x_sub_outlier[..., (hidden_dim // 2):] * (2 ** 4)
-            elif sub_outlier_bit == 2:
-                x_sub_outlier = (x_sub_outlier + 2).to(torch.uint8)
-                x_sub_outlier_compressed = x_sub_outlier[..., ((hidden_dim // 4) * 3):hidden_dim] * (2 ** 6)
-                x_sub_outlier_compressed += x_sub_outlier[..., (hidden_dim // 2):((hidden_dim // 4) * 3)] * (2 ** 4)
-                x_sub_outlier_compressed += x_sub_outlier[..., (hidden_dim // 4):(hidden_dim // 2)] * (2 ** 2)
-                x_sub_outlier_compressed += x_sub_outlier[..., 0:(hidden_dim // 4)]
-            elif sub_outlier_bit == 1:
-                x_sub_outlier = (x_sub_outlier + 1).to(torch.uint8)
-                x_sub_outlier_compressed = x_sub_outlier[..., ((hidden_dim // 8) * 7):hidden_dim] * (2 ** 7)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 6):((hidden_dim // 8) * 7)] * (2 ** 6)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 5):((hidden_dim // 8) * 6)] * (2 ** 5)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 4):((hidden_dim // 8) * 5)] * (2 ** 4)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 3):((hidden_dim // 8) * 4)] * (2 ** 3)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 2):((hidden_dim // 8) * 3)] * (2 ** 2)
-                x_sub_outlier_compressed += x_sub_outlier[..., ((hidden_dim // 8) * 1):((hidden_dim // 8) * 2)] * (2 ** 1)
-                x_sub_outlier_compressed += x_sub_outlier[..., 0:(hidden_dim // 8)]
-            del x_sub_outlier
-    
-    return x_outlier_compressed, x_sub_outlier_compressed, scale
+    M, K = l.shape
+    K, N = r.shape
+    B, _, _ = x.shape
+    if K < 16:
+        l = torch.cat([l, torch.zeros((M, 16 - K), device=l.device, dtype=l.dtype)], dim=1).contiguous()
+        r = torch.cat([r, torch.zeros((16 - K, N), device=r.device, dtype=r.dtype)], dim=0).contiguous()
+        K = 16
+    # 1D launch kernel where each block gets its own program.
+    grid = lambda META: (
+        triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), B
+    )
+    elem_per_position = 8 // quantize_bit
+    o = torch.empty((B, M, N), device=x.device, dtype=torch.bfloat16)
+    q = torch.empty((B, M, N // elem_per_position), device=x.device, dtype=torch.uint8)
+    low_rank_subtraction_fuse_compression_quantization_kernel[grid](
+        l, r, x, o, q, s,
+        B, M, N, K,
+        l.stride(0), l.stride(1),
+        r.stride(0), r.stride(1),
+        x.stride(0), x.stride(1), x.stride(2), 
+        o.stride(0), o.stride(1), o.stride(2),
+        q.stride(0), q.stride(1), q.stride(2),
+        s.stride(0), s.stride(1),
+        outlier, quantize_bit, elem_per_position,
+        BLOCK_SIZE_K=K
+    )
+    o = o.view(-1).to_sparse() # view to save the index memory
+    return o, q
 
 
-@torch.no_grad
-def true_divide_outlier_suboutlier_svd_decompress(x_outlier_compressed, x_sub_outlier_compressed, sub_outlier_bit, scale, is_head = False, num_heads = 1, L = None, R = None):
-    x_outlier = x_outlier_compressed#.to_dense()
+def low_rank_addition_fuse_decompression_dequantization(l, r, q, o, s, quantize_bit=8, is_head=False, num_heads=1):
+    assert l.shape[1] == r.shape[0], "Incompatible dimensions"
+    assert l.is_contiguous(), "Matrix A must be contiguous"
+    assert r.is_contiguous(), "Matrix B must be contiguous"
+    M, K = l.shape
+    K, N = r.shape
+    B, _, _ = q.shape
     
-    # step 1: add the base
-    # tgt_L = torch.zeros((x_outlier.shape[-2], L.shape[-1]))
-    x = 0#(L @ R)
+    if K < 16:
+        l = torch.cat([l, torch.zeros((M, 16 - K), device=l.device, dtype=l.dtype)], dim=1).contiguous()
+        r = torch.cat([r, torch.zeros((16 - K, N), device=r.device, dtype=r.dtype)], dim=0).contiguous()
+        K = 16
     
-    # step 2: add the outliers
-   
-    # step 3: decompress the sub_outliers
-    if torch.sum(scale) != 1.:
-        if sub_outlier_bit == 16:
-            x_sub_outlier = x_sub_outlier_compressed
-        elif sub_outlier_bit == 8:
-            # just return to the original value
-            x_sub_outlier = x_sub_outlier_compressed.to(x_outlier.dtype) * scale
-        elif sub_outlier_bit == 4:
-            x_sub_outlier_1st = x_sub_outlier_compressed % (2 ** 4)
-            x_sub_outlier_2nd = (x_sub_outlier_compressed - x_sub_outlier_1st) // (2 ** 4)
-            x_sub_outlier = torch.cat((x_sub_outlier_1st, x_sub_outlier_2nd), dim=-1)
-            del x_sub_outlier_1st, x_sub_outlier_2nd
-            x_sub_outlier = ((x_sub_outlier).to(x_outlier.dtype) - 8) * scale
-        elif sub_outlier_bit == 2:
-            x_sub_outlier_1st = x_sub_outlier_compressed % (2 ** 2)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_1st) // (2 ** 2)
-            x_sub_outlier_2nd = x_sub_outlier_compressed % (2 ** 2)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_2nd) // (2 ** 2)
-            x_sub_outlier_3rd = x_sub_outlier_compressed % (2 ** 2)
-            x_sub_outlier_4th = (x_sub_outlier_compressed - x_sub_outlier_3rd) // (2 ** 2)
-            x_sub_outlier = torch.cat((x_sub_outlier_1st, x_sub_outlier_2nd, x_sub_outlier_3rd, x_sub_outlier_4th), dim=-1)
-            del x_sub_outlier_1st, x_sub_outlier_2nd, x_sub_outlier_3rd, x_sub_outlier_4th
-            x_sub_outlier = ((x_sub_outlier).to(x_outlier.dtype) - 2) * scale
-        elif sub_outlier_bit == 1:
-            x_sub_outlier_1st = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_1st) // (2 ** 1)
-            x_sub_outlier_2nd = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_2nd) // (2 ** 1)
-            x_sub_outlier_3rd = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_3rd) // (2 ** 1)
-            x_sub_outlier_4th = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_4th) // (2 ** 1)
-            x_sub_outlier_5th = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_5th) // (2 ** 1)
-            x_sub_outlier_6th = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_compressed = (x_sub_outlier_compressed - x_sub_outlier_6th) // (2 ** 1)
-            x_sub_outlier_7th = x_sub_outlier_compressed % (2 ** 1)
-            x_sub_outlier_8th = (x_sub_outlier_compressed - x_sub_outlier_7th) // (2 ** 1)
-            x_sub_outlier = torch.cat((x_sub_outlier_1st, x_sub_outlier_2nd, x_sub_outlier_3rd, x_sub_outlier_4th, x_sub_outlier_5th, x_sub_outlier_6th, x_sub_outlier_7th, x_sub_outlier_8th), dim=-1)
-            del x_sub_outlier_1st, x_sub_outlier_2nd, x_sub_outlier_3rd, x_sub_outlier_4th, x_sub_outlier_5th, x_sub_outlier_6th, x_sub_outlier_7th, x_sub_outlier_8th
-            x_sub_outlier = ((x_sub_outlier).to(x_outlier.dtype) - 1) * scale
-        x = x + x_sub_outlier #+ x_outlier.view(x_sub_outlier.shape)
-
+    # 1D launch kernel where each block gets its own program.
+    elem_per_position = 8 // quantize_bit
+    grid = lambda META: (
+        triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), B
+    )
+    x = torch.empty((B, M, N), device=l.device, dtype=torch.bfloat16)
+    x_temp = torch.empty((B, M, N), device=l.device, dtype=torch.uint8)
+    o = o.to_dense().view(B, M, N)
+    
+    low_rank_addition_fuse_decompression_dequantization_kernel[grid](
+        l, r, x, x_temp, o, q, s,
+        B, M, N, K,
+        l.stride(0), l.stride(1),
+        r.stride(0), r.stride(1),
+        x.stride(0), x.stride(1), x.stride(2),
+        x_temp.stride(0), x_temp.stride(1), x_temp.stride(2),
+        o.stride(0), o.stride(1), o.stride(2),
+        q.stride(0), q.stride(1), q.stride(2),
+        s.stride(0), s.stride(1),
+        quantize_bit, elem_per_position,
+        BLOCK_SIZE_K=K
+    )
+    del x_temp
+    
     if is_head:
         x = hidden_to_head_shape(x, num_heads=num_heads)
     
@@ -170,13 +102,12 @@ def true_compress_softmax(x: torch.Tensor, outlier: float):
     mask = (x > outlier)
     x_outlier = x * mask
     x_outlier_sparse = x_outlier.to_sparse()
-    x_outlier_sparse = convert_coo_to_tuple(x_outlier_sparse)
     return x_outlier_sparse
 
 
 @torch.no_grad
 def true_decompress_softmax(x_sparse: torch.Tensor):
-    return convert_tuple_to_coo(x_sparse).to_dense()
+    return x_sparse.to_dense()
 
 
 def prune_softmax(x: torch.Tensor, outlier: float):
@@ -244,8 +175,6 @@ def get_statistics_softmax(x: torch.Tensor, iteration: int, outlier_ratio: float
 
 @torch.no_grad
 def pad_cut_L(src_L, tgt_L):
-    # src_L: [seq_len_1, r]
-    # tgt_L: [seq_len_2, r]
     seq_len_1, r = src_L.shape
     seq_len_2, _ = tgt_L.shape
     if seq_len_1 < seq_len_2:
