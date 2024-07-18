@@ -133,7 +133,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, eps, gemma = False,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -225,5 +225,6 @@ def fast_rms_layernorm(layernorm, X, gemma = False):
         X, W, eps, gemma,
         layernorm.iteration, layernorm.calibration_step, layernorm
     )
+    layernorm.iteration += 1
     return out
 pass
