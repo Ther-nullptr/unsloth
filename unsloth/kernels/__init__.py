@@ -31,8 +31,10 @@ from .fast_lora import (
 	apply_lora_qkv,
 	apply_lora_o,
 )
+from .flash_attn_interface import *
 from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
 from .compress_function import *
+from .fused_compression import *
 
 try:
 	print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")

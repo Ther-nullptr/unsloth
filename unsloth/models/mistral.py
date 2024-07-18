@@ -139,7 +139,8 @@ def MistralAttention_fast_forward( #! This way
         sw = getattr(self.config, "sliding_window", None)
         sw = kv_seq_len if (sw is None or sw == "null") else sw
         window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
+        A = efficient_flash_attn_func(Q, K, V, causal = True, window_size = window, iteration=self.iteration, calibration_step=self.calibration_step, register_target=self)
+        self.iteration += 1
     else:
         # Grouped query attention
         # if n_groups != 1:

@@ -377,7 +377,7 @@ def LlamaAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal = True)
+        A = efficient_flash_attn_func(Q, K, V, causal = True, iteration=self.iteration, calibration_step=self.calibration_step, register_target=self)
     else:
         # Grouped query attention
         if n_groups != 1:
