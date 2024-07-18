@@ -69,7 +69,7 @@ class LoRA_MLP(torch.autograd.Function):
                 downW, downW_quant, downA, downB, downS,
                 _forward_function, _backward_function,                
                 iteration=0, calibration_step=5, register_target=None,
-                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -297,7 +297,7 @@ class LoRA_QKV(torch.autograd.Function):
                 KW, KW_quant, KA, KB, KS,
                 VW, VW_quant, VA, VB, VS,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -456,7 +456,7 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X : torch.Tensor,
                 W, W_quant, A, B, S,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=16, outlier_ratio=0.001, quantize_bit=4, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
         ctx.custom_saved_tensors = (W, W_quant, S,)
