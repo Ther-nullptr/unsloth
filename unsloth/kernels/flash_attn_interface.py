@@ -14,7 +14,7 @@ def efficient_flash_attn_func(
     deterministic=False,
     return_attn_probs=False,
     iteration=0, calibration_step=5, register_target=None,
-    rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'
+    rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'
 ):
     return EfficientFlashAttnFunc.apply(
         q,
@@ -47,7 +47,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         deterministic,
         return_softmax,
         iteration=0, calibration_step=5, register_target=None,
-        rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'
+        rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'
     ):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
@@ -71,17 +71,17 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
                 outlier_g, L_g, R_g, scale_g = get_statistics_compress(v, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
             if iteration == 0: # register
                 # for X
-                register_target.register_buffer('outlier_X', outlier_X)
+                register_target.register_buffer('outlier_X', torch.tensor(outlier_X).to(torch.bfloat16))
                 register_target.register_buffer('L_X', L_X)
                 register_target.register_buffer('R_X', R_X)
                 register_target.register_buffer('scale_X', scale_X)
                 # for e
-                register_target.register_buffer('outlier_e', outlier_e)
+                register_target.register_buffer('outlier_e', torch.tensor(outlier_e).to(torch.bfloat16))
                 register_target.register_buffer('L_e', L_e)
                 register_target.register_buffer('R_e', R_e)
                 register_target.register_buffer('scale_e', scale_e)
                 # for g
-                register_target.register_buffer('outlier_g', outlier_g)
+                register_target.register_buffer('outlier_g', torch.tensor(outlier_g).to(torch.bfloat16))
                 register_target.register_buffer('L_g', L_g)
                 register_target.register_buffer('R_g', R_g)
                 register_target.register_buffer('scale_g', scale_g)
@@ -131,9 +131,9 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         ctx.k_num_heads = k.shape[2]
         
         ctx.save_for_backward(
-            outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, scale_X,
-            outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, scale_e,
-            outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, scale_g,
+            outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, register_target.scale_X,
+            outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, register_target.scale_e,
+            outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, register_target.scale_g,
             out_padded, softmax_lse, rng_state
         )
         ctx.dropout_p = dropout_p
@@ -167,7 +167,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
             s=scale_e,
             quantize_bit=ctx.quantize_bit,
             is_head=True,
-            num_heads=ctx.num_k_heads
+            num_heads=ctx.k_num_heads
         )
         v = low_rank_addition_fuse_decompression_dequantization(
             l=g_L,
@@ -177,7 +177,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
             s=scale_g,
             quantize_bit=ctx.quantize_bit,
             is_head=True,
-            num_heads=ctx.num_k_heads
+            num_heads=ctx.k_num_heads
         )
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
         _flash_attn_backward(

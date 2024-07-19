@@ -133,7 +133,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, eps, gemma = False,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'):
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -166,7 +166,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             with torch.autocast(device_type='cuda', dtype=torch.float32):
                 outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
             if iteration == 0: # register
-                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('outlier', torch.tensor(outlier_X).to(torch.bfloat16))
                 register_target.register_buffer('L', L_X)
                 register_target.register_buffer('R', R_X)
                 register_target.register_buffer('scale', scale_X)
@@ -181,11 +181,11 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             r = register_target.R, 
             x = X, 
             s = register_target.scale, 
-            quantized_bit = register_target.outlier, 
-            outlier = quantize_bit
+            quantize_bit = quantize_bit,
+            outlier = register_target.outlier, 
         )
         ctx.quantize_bit = quantize_bit        
-        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X, W, r)
+        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, register_target.scale, W, r)
         
         return Y.view(*shape)
     pass

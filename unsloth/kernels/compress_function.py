@@ -27,6 +27,7 @@ def low_rank_subtraction_fuse_compression_quantization(l, r, x, s, quantize_bit=
     M, K = l.shape
     K, N = r.shape
     B, _, _ = x.shape
+    outlier = outlier.item()
     if K < 16:
         l = torch.cat([l, torch.zeros((M, 16 - K), device=l.device, dtype=l.dtype)], dim=1).contiguous()
         r = torch.cat([r, torch.zeros((16 - K, N), device=r.device, dtype=r.dtype)], dim=0).contiguous()
@@ -164,7 +165,7 @@ def get_statistics_compress(x: torch.Tensor, iteration: int, outlier_ratio: floa
     else:
         scale = torch.tensor(1.).cuda()
     
-    return outlier, L.to(torch.bfloat16), R.to(torch.bfloat16), scale.to(torch.bfloat16)
+    return outlier.item(), L.to(torch.bfloat16), R.to(torch.bfloat16), scale.to(torch.bfloat16)
 
 
 @torch.no_grad

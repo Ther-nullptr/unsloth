@@ -69,7 +69,7 @@ class LoRA_MLP(torch.autograd.Function):
                 downW, downW_quant, downA, downB, downS,
                 _forward_function, _backward_function,                
                 iteration=0, calibration_step=5, register_target=None,
-                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -83,8 +83,6 @@ class LoRA_MLP(torch.autograd.Function):
             downW, downW_quant, downS,
             _backward_function,
         )
-        # ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
-        #                       X, e, g)
         
         #! deal with X, e, g
         if iteration < calibration_step:
@@ -94,17 +92,17 @@ class LoRA_MLP(torch.autograd.Function):
                 outlier_g, L_g, R_g, scale_g = get_statistics_compress(g, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
             if iteration == 0: # register
                 # for X
-                register_target.register_buffer('outlier_X', outlier_X)
+                register_target.register_buffer('outlier_X', torch.tensor(outlier_X).to(torch.bfloat16))
                 register_target.register_buffer('L_X', L_X)
                 register_target.register_buffer('R_X', R_X)
                 register_target.register_buffer('scale_X', scale_X)
                 # for e
-                register_target.register_buffer('outlier_e', outlier_e)
+                register_target.register_buffer('outlier_e', torch.tensor(outlier_e).to(torch.bfloat16))
                 register_target.register_buffer('L_e', L_e)
                 register_target.register_buffer('R_e', R_e)
                 register_target.register_buffer('scale_e', scale_e)
                 # for g
-                register_target.register_buffer('outlier_g', outlier_g)
+                register_target.register_buffer('outlier_g', torch.tensor(outlier_g).to(torch.bfloat16))
                 register_target.register_buffer('L_g', L_g)
                 register_target.register_buffer('R_g', R_g)
                 register_target.register_buffer('scale_g', scale_g)
@@ -152,9 +150,9 @@ class LoRA_MLP(torch.autograd.Function):
         ctx.quantize_bit = quantize_bit
         
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
-            outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, scale_X,
-            outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, scale_e,
-            outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, scale_g,
+            outlier_X_compressed, quantized_X_compressed, register_target.L_X, register_target.R_X, register_target.scale_X,
+            outlier_e_compressed, quantized_e_compressed, register_target.L_e, register_target.R_e, register_target.scale_e,
+            outlier_g_compressed, quantized_g_compressed, register_target.L_g, register_target.R_g, register_target.scale_g,
         )
         
         return i
@@ -335,7 +333,7 @@ class LoRA_QKV(torch.autograd.Function):
                 KW, KW_quant, KA, KB, KS,
                 VW, VW_quant, VA, VB, VS,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'):
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -353,7 +351,7 @@ class LoRA_QKV(torch.autograd.Function):
             with torch.autocast(device_type='cuda', dtype=torch.float32):
                 outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
             if iteration == 0: # register
-                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('outlier', torch.tensor(outlier_X).to(torch.bfloat16))
                 register_target.register_buffer('L', L_X)
                 register_target.register_buffer('R', R_X)
                 register_target.register_buffer('scale', scale_X)
@@ -364,15 +362,15 @@ class LoRA_QKV(torch.autograd.Function):
                 register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
         
         outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
-            l = register_target.L_X, 
-            r = register_target.R_X,
+            l = register_target.L, 
+            r = register_target.R,
             x = X,
-            s = register_target.scale_X, 
+            s = register_target.scale, 
             quantize_bit = quantize_bit, 
-            outlier = register_target.outlier_X, 
+            outlier = register_target.outlier, 
         )
         ctx.quantize_bit = quantize_bit
-        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X,\
+        ctx.save_for_backward(outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, register_target.scale,\
             QA, QB, KA, KB, VA, VB,)
         return Q, K, V
     pass
@@ -504,7 +502,7 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X : torch.Tensor,
                 W, W_quant, A, B, S,
                 iteration=0, calibration_step=5, register_target=None,
-                rank=0, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'):
+                rank=0, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
         ctx.custom_saved_tensors = (W, W_quant, S,)
@@ -514,7 +512,7 @@ class LoRA_W(torch.autograd.Function):
             with torch.autocast(device_type='cuda', dtype=torch.float32):
                 outlier_X, L_X, R_X, scale_X = get_statistics_compress(X, iteration, outlier_ratio, 1., quantize_bit, quantize_method, rank)
             if iteration == 0: # register
-                register_target.register_buffer('outlier', outlier_X)
+                register_target.register_buffer('outlier', torch.tensor(outlier_X).to(torch.bfloat16))
                 register_target.register_buffer('L', L_X)
                 register_target.register_buffer('R', R_X)
                 register_target.register_buffer('scale', scale_X)
@@ -525,15 +523,15 @@ class LoRA_W(torch.autograd.Function):
                 register_target.scale = (register_target.scale * iteration + scale_X) / (iteration + 1)
         
         outlier_X_compressed, quantized_X_compressed = low_rank_subtraction_fuse_compression_quantization(
-            l = register_target.L_X, 
-            r = register_target.R_X,
+            l = register_target.L, 
+            r = register_target.R,
             x = X,
-            s = register_target.scale_X, 
+            s = register_target.scale, 
             quantize_bit = quantize_bit, 
-            outlier = register_target.outlier_X, 
+            outlier = register_target.outlier, 
         )
         ctx.quantize_bit = quantize_bit
-        ctx.save_for_backward(A, B, outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, scale_X)
+        ctx.save_for_backward(A, B, outlier_X_compressed, quantized_X_compressed, register_target.L, register_target.R, register_target.scale)
 
         return XW
     pass
