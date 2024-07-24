@@ -259,8 +259,34 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if A is not None:
         # LoRA is enabled
         A, B = A.t(), B.t()
-        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+        out.addmm_((X @ A.to(dtype)), (s * B.to(dtype)))
     pass
     
     return out.view(batch, seq_len, -1) if reshape else out
 pass
+
+
+def matmul_lora_faster(X, W, W_quant, A, B, s, out = None):
+    dtype = X.dtype
+    W = fast_dequantize(W.t(), W_quant)
+
+    if X.dim() == 3:
+        batch, seq_len, d = X.shape
+        X = X.view(-1, X.shape[-1])
+        reshape = True
+    else:
+        reshape = False
+    pass
+
+    # Y = XW + XABs
+    # 1. XA
+    # 2. [X, XA] @ [W, Bs]
+    A, B = A.t(), B.t()
+    XA = X @ A.to(dtype)
+    XXA = torch.cat([X, XA], dim = -1)
+    Ws = torch.cat([W, s * B.to(dtype)], dim = 0)
+    if W_quant is not None: del W
+    out = XXA @ Ws
+    
+    return out.view(batch, seq_len, -1) if reshape else out
+pass 

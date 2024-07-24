@@ -142,8 +142,8 @@ def get_statistics_compress(x: torch.Tensor, iteration: int, outlier_ratio: floa
             x = x - L @ R
             del U, S, V
     else:
-        L = torch.zeros((x.shape[-2], 1)).to(x.device).to(x.dtype)
-        R = torch.zeros((1, x.shape[-1])).to(x.device).to(x.dtype)
+        L = torch.zeros((x.shape[-2], 16)).to(x.device).to(x.dtype)
+        R = torch.zeros((16, x.shape[-1])).to(x.device).to(x.dtype)
 
     outlier = torch.kthvalue(x[0].flatten().to(torch.float32), int(x[0].numel() * (1 - outlier_ratio))).values
     x_outlier = x * (x.abs() > outlier)
@@ -164,8 +164,7 @@ def get_statistics_compress(x: torch.Tensor, iteration: int, outlier_ratio: floa
             raise "Unsupport Quantize Method"
     else:
         scale = torch.tensor(1.).cuda()
-    
-    return outlier.item(), L.to(torch.bfloat16), R.to(torch.bfloat16), scale.to(torch.bfloat16)
+    return outlier.item(), L.to(torch.bfloat16), R.to(torch.bfloat16), (scale + 1e-6).to(torch.bfloat16)
 
 
 @torch.no_grad

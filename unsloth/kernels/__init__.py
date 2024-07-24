@@ -32,7 +32,7 @@ from .fast_lora import (
 	apply_lora_o,
 )
 from .flash_attn_interface import *
-from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
+from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora, matmul_lora_faster
 from .compress_function import *
 
 try:

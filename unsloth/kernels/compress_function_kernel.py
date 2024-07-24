@@ -90,8 +90,8 @@ def low_rank_subtraction_fuse_compression_quantization_kernel(
     q = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N // elem_per_position), dtype=tl.uint8)
     
     offs_sn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    s_ptrs = s_ptr + stride_sn * offs_sn[None, :] + offs_b * stride_sb
-    s_mask = (offs_b < B) & (offs_sn[None, :] < N)
+    s_ptrs = s_ptr + stride_sn * offs_sn[None, :] 
+    s_mask = (offs_sn[None, :] < N)
     s = tl.load(s_ptrs, mask=s_mask, other=1.0)
     
     x = tl.math.round(x / s)
@@ -194,8 +194,8 @@ def low_rank_addition_fuse_decompression_dequantization_kernel(
         
     # dequantize
     offs_sn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    s_ptrs = s_ptr + stride_sn * offs_sn[None, :] + offs_b * stride_sb
-    s_mask = (offs_b < B) & (offs_sn[None, :] < N)
+    s_ptrs = s_ptr + stride_sn * offs_sn[None, :] 
+    s_mask = (offs_sn[None, :] < N)
     s = tl.load(s_ptrs, mask=s_mask, other=1.0)
     
     offs_x_temp_m = offs_xm
