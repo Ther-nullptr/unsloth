@@ -18,7 +18,6 @@ import torch
 from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
 
-
 @triton.heuristics({"DO_SOFTCAPPING": lambda args: args["DO_SOFTCAPPING"],})
 @triton.jit
 def _cross_entropy_forward(

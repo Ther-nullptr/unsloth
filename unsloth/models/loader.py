@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
@@ -31,9 +31,6 @@ SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
-if SUPPORTS_GEMMA2:
-    from .gemma2 import FastGemma2Model
-pass
 
 
 def __get_model_name(
@@ -241,13 +238,13 @@ class FastLanguageModel(FastLlamaModel):
                     "To install flash-attn, do the below:\n"\
                     '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
                 )
-            elif HAS_FLASH_ATTENTION and not HAS_FLASH_ATTENTION_SOFTCAPPING:
-                print(
-                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
-                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
-                    "To update flash-attn, do the below:\n"\
-                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
-                )
+            # elif HAS_FLASH_ATTENTION and not HAS_FLASH_ATTENTION_SOFTCAPPING:
+            #     print(
+            #         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+            #         "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+            #         "To update flash-attn, do the below:\n"\
+            #         '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+            #     )
             
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
