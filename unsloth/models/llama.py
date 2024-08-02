@@ -1799,7 +1799,6 @@ class FastLlamaModel:
         
         # set iteration and calibration step to every module:
         for name, module in model.named_modules():
-            print(name)
             module.iteration = 0
             module.calibration_step = calibration_step
 
