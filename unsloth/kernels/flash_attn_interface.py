@@ -12,6 +12,7 @@ def efficient_flash_attn_func(
     window_size=(-1, -1),  # -1 means infinite context window
     alibi_slopes=None,
     deterministic=False,
+    softcap=0.0,
     return_attn_probs=False,
     iteration=0, calibration_step=5, register_target=None,
     rank=4, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'
@@ -24,6 +25,7 @@ def efficient_flash_attn_func(
         softmax_scale,
         causal,
         window_size,
+        softcap,
         alibi_slopes,
         deterministic,
         return_attn_probs,
@@ -43,6 +45,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         softmax_scale,
         causal,
         window_size,
+        softcap,
         alibi_slopes,
         deterministic,
         return_softmax,
@@ -59,6 +62,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
             softmax_scale,
             causal=causal,
             window_size=window_size,
+            softcap=softcap,
             alibi_slopes=alibi_slopes,
             return_softmax=return_softmax and dropout_p > 0,
         )
@@ -140,6 +144,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.window_size = window_size
+        ctx.softcap = softcap
         ctx.alibi_slopes = alibi_slopes
         ctx.deterministic = deterministic
         return out if not return_softmax else (out, softmax_lse, S_dmask)
@@ -194,6 +199,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
             ctx.softmax_scale,
             ctx.causal,
             ctx.window_size,
+            ctx.softcap,
             ctx.alibi_slopes,
             ctx.deterministic,
             rng_state=rng_state,
@@ -201,4 +207,4 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
