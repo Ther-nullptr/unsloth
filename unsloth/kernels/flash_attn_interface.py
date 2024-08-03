@@ -15,7 +15,7 @@ def efficient_flash_attn_func(
     softcap=0.0,
     return_attn_probs=False,
     iteration=0, calibration_step=5, register_target=None,
-    rank=4, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'
+    rank=4, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'
 ):
     return EfficientFlashAttnFunc.apply(
         q,
@@ -50,7 +50,7 @@ class EfficientFlashAttnFunc(torch.autograd.Function):
         deterministic,
         return_softmax,
         iteration=0, calibration_step=5, register_target=None,
-        rank=4, outlier_ratio=0.005, quantize_bit=2, quantize_method='per-channel'
+        rank=4, outlier_ratio=0.005, quantize_bit=8, quantize_method='per-channel'
     ):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
